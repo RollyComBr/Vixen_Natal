@@ -1,19 +1,49 @@
 #include <Adafruit_PCF8574.h>
+#include <EEPROM.h>
 
 Adafruit_PCF8574 pcf;
-#define PORTAS 8  // Total de canais (PCF + 74HC595)
+
+// Configuracoes dinâmicas
+int PORTAS_TOTAIS;
+int PORTAS_PCF;
+int PORTAS_595;
+int qtdeCI;
 
 #define pinSH_CP 4
 #define pinST_CP 3
 #define pinDS    2
-#define qtdeCI   1
 
-int incomingByte[PORTAS];
-byte ciBuffer[qtdeCI];
+byte ciBuffer[8]; // Suporta até 64 saídas 595
+unsigned long ultimaAtivacao[64];
+const unsigned long TEMPO_MINIMO_LIGADO = 5;
 
-// Filtro: tempo do último "ligar" para cada saída
-unsigned long ultimaAtivacao[PORTAS];
-const unsigned long TEMPO_MINIMO_LIGADO = 5;  // ms
+#define EEPROM_ADDR_PT 0
+#define EEPROM_ADDR_PC 1
+#define EEPROM_ADDR_PH 2
+
+void carregarConfiguracoes() {
+  PORTAS_TOTAIS = EEPROM.read(EEPROM_ADDR_PT);
+  PORTAS_PCF = EEPROM.read(EEPROM_ADDR_PC);
+  PORTAS_595 = EEPROM.read(EEPROM_ADDR_PH);
+
+  if (PORTAS_TOTAIS == 255 || PORTAS_TOTAIS == 0 || PORTAS_TOTAIS > 64) PORTAS_TOTAIS = 16;
+  if (PORTAS_PCF == 255 || PORTAS_PCF > PORTAS_TOTAIS) PORTAS_PCF = 8;
+  if (PORTAS_595 == 255 || PORTAS_595 > PORTAS_TOTAIS) PORTAS_595 = PORTAS_TOTAIS - PORTAS_PCF;
+
+  qtdeCI = (PORTAS_595 + 7) / 8;
+}
+
+void salvarEEPROM(byte endereco, byte valor) {
+  if (EEPROM.read(endereco) != valor) {
+    EEPROM.update(endereco, valor);
+  }
+}
+
+void salvarConfiguracoes() {
+  salvarEEPROM(EEPROM_ADDR_PT, PORTAS_TOTAIS);
+  salvarEEPROM(EEPROM_ADDR_PC, PORTAS_PCF);
+  salvarEEPROM(EEPROM_ADDR_PH, PORTAS_595);
+}
 
 void ciWrite(byte pino, bool estado) {
   bitWrite(ciBuffer[pino / 8], pino % 8, estado);
@@ -30,6 +60,9 @@ void ciWrite(byte pino, bool estado) {
 
 void setup() {
   Serial.begin(57600);
+
+  carregarConfiguracoes();
+
   pinMode(pinSH_CP, OUTPUT);
   pinMode(pinST_CP, OUTPUT);
   pinMode(pinDS, OUTPUT);
@@ -44,7 +77,7 @@ void setup() {
     pcf.digitalWrite(p, HIGH);
   }
 
-  for (uint8_t i = 0; i < qtdeCI; i++) {
+  for (uint8_t i = 0; i < 8; i++) {
     ciBuffer[i] = 0;
   }
 
@@ -52,53 +85,110 @@ void setup() {
 }
 
 void loop() {
-  static byte buffer[PORTAS];
+  processarSerial();
+}
+
+void processarSerial() {
+  static byte buffer[64];
   static byte index = 0;
   static unsigned long lastByteTime = 0;
+  static String inputString = "";
 
   while (Serial.available()) {
-    byte b = Serial.read();
-    unsigned long now = millis();
+    char inChar = (char)Serial.read();
 
+    if (isAlpha(inChar) || inChar == ' ' || isDigit(inChar) || inChar == '\n') {
+      if (inChar == '\n') {
+        inputString.trim();
+        interpretarComando(inputString);
+        inputString = "";
+      } else {
+        inputString += inChar;
+      }
+      continue;
+    }
+
+    unsigned long now = millis();
     if (now - lastByteTime > 20) {
       index = 0;
     }
     lastByteTime = now;
 
-    buffer[index++] = b;
+    buffer[index++] = inChar;
+    if (index == PORTAS_TOTAIS) {
+      aplicarComandosReles(buffer);
+      index = 0;
+    }
+  }
+}
 
-    if (index == PORTAS) {
-      for (int j = 0; j < PORTAS; j++) {
-        bool novoEstado = buffer[j];
+void interpretarComando(String comando) {
+  if (comando.startsWith("CFG PT")) {
+    int valor = comando.substring(7).toInt();
+    if (valor > 0 && valor <= 64) {
+      PORTAS_TOTAIS = valor;
+      salvarConfiguracoes();
+      Serial.println("PORTAS_TOTAIS atualizado para " + String(PORTAS_TOTAIS));
+    } else {
+      Serial.println("Valor invalido para PT");
+    }
+  } else if (comando.startsWith("CFG PC")) {
+    int valor = comando.substring(7).toInt();
+    if (valor >= 0 && valor <= PORTAS_TOTAIS) {
+      PORTAS_PCF = valor;
+      PORTAS_595 = PORTAS_TOTAIS - PORTAS_PCF;
+      qtdeCI = (PORTAS_595 + 7) / 8;
+      salvarConfiguracoes();
+      Serial.println("PORTAS_PCF atualizado para " + String(PORTAS_PCF));
+    } else {
+      Serial.println("Valor invalido para PC");
+    }
+  } else if (comando.startsWith("CFG PH")) {
+    int valor = comando.substring(7).toInt();
+    if (valor >= 0 && valor <= PORTAS_TOTAIS) {
+      PORTAS_595 = valor;
+      PORTAS_PCF = PORTAS_TOTAIS - PORTAS_595;
+      qtdeCI = (PORTAS_595 + 7) / 8;
+      salvarConfiguracoes();
+      Serial.println("PORTAS_595 atualizado para " + String(PORTAS_595));
+      Serial.println("qtdeCI ajustado para " + String(qtdeCI));
+    } else {
+      Serial.println("Valor invalido para PH");
+    }
+  } else if (comando == "GET CFG") {
+    Serial.println("CFG ATUAL:");
+    Serial.println("PORTAS_TOTAIS: " + String(PORTAS_TOTAIS));
+    Serial.println("PORTAS_PCF: " + String(PORTAS_PCF));
+    Serial.println("PORTAS_595: " + String(PORTAS_595));
+    Serial.println("qtdeCI: " + String(qtdeCI));
+  } else {
+    Serial.println("Comando desconhecido: " + comando);
+  }
+}
 
-        // Inversão para relé ativo em LOW
-        if (j < 8) {
-          // Filtro de 30 ms
-          if (novoEstado == 1) {
-            // Liga (relé em LOW)
-            pcf.digitalWrite(j, LOW);
-            ultimaAtivacao[j] = millis();
-          } else {
-            if (millis() - ultimaAtivacao[j] >= TEMPO_MINIMO_LIGADO) {
-              pcf.digitalWrite(j, HIGH);  // Desliga
-            }
-            // Caso contrário, ignora o desligamento
-          }
-        } else {
-          // Saídas 595 — sem inversão
-          byte pin595 = j - 8;
-          if (novoEstado == 1) {
-            ciWrite(pin595, true);
-            ultimaAtivacao[j] = millis();
-          } else {
-            if (millis() - ultimaAtivacao[j] >= TEMPO_MINIMO_LIGADO) {
-              ciWrite(pin595, false);
-            }
-          }
+void aplicarComandosReles(byte* buffer) {
+  for (int j = 0; j < PORTAS_TOTAIS; j++) {
+    bool novoEstado = buffer[j];
+
+    if (j < PORTAS_PCF) {
+      if (novoEstado == 1) {
+        pcf.digitalWrite(j, LOW);
+        ultimaAtivacao[j] = millis();
+      } else {
+        if (millis() - ultimaAtivacao[j] >= TEMPO_MINIMO_LIGADO) {
+          pcf.digitalWrite(j, HIGH);
         }
       }
-
-      index = 0;
+    } else {
+      byte pin595 = j - PORTAS_PCF;
+      if (novoEstado == 1) {
+        ciWrite(pin595, true);
+        ultimaAtivacao[j] = millis();
+      } else {
+        if (millis() - ultimaAtivacao[j] >= TEMPO_MINIMO_LIGADO) {
+          ciWrite(pin595, false);
+        }
+      }
     }
   }
 }

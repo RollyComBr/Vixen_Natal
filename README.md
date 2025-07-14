@@ -50,11 +50,11 @@ Use os comandos abaixo no terminal serial (baudrate 57600) para configurar e ope
 
 - `GET CFG`  
   Exibe as configurações atuais armazenadas:
-  CFG ATUAL:
-  PORTAS_TOTAIS: 16
-  PORTAS_PCF: 8
-  PORTAS_595: 8
-  qtdeCI: 1
+  `CFG ATUAL:`
+  `PORTAS_TOTAIS: 16`
+  `PORTAS_PCF: 8`
+  `PORTAS_595: 8`
+  `qtdeCI: 1`
 
 ---
 

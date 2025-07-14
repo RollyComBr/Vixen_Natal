@@ -21,16 +21,20 @@ const unsigned long TEMPO_MINIMO_LIGADO = 5;
 #define EEPROM_ADDR_PC 1
 #define EEPROM_ADDR_PH 2
 
+void atualizarConfiguracoesDerivadas() {
+  PORTAS_595 = PORTAS_TOTAIS - PORTAS_PCF;
+  if (PORTAS_595 < 0) PORTAS_595 = 0;
+  qtdeCI = (PORTAS_595 + 7) / 8;
+}
+
 void carregarConfiguracoes() {
   PORTAS_TOTAIS = EEPROM.read(EEPROM_ADDR_PT);
   PORTAS_PCF = EEPROM.read(EEPROM_ADDR_PC);
-  PORTAS_595 = EEPROM.read(EEPROM_ADDR_PH);
 
   if (PORTAS_TOTAIS == 255 || PORTAS_TOTAIS == 0 || PORTAS_TOTAIS > 64) PORTAS_TOTAIS = 16;
   if (PORTAS_PCF == 255 || PORTAS_PCF > PORTAS_TOTAIS) PORTAS_PCF = 8;
-  if (PORTAS_595 == 255 || PORTAS_595 > PORTAS_TOTAIS) PORTAS_595 = PORTAS_TOTAIS - PORTAS_PCF;
 
-  qtdeCI = (PORTAS_595 + 7) / 8;
+  atualizarConfiguracoesDerivadas();
 }
 
 void salvarEEPROM(byte endereco, byte valor) {
@@ -127,6 +131,16 @@ void interpretarComando(String comando) {
     int valor = comando.substring(7).toInt();
     if (valor > 0 && valor <= 64) {
       PORTAS_TOTAIS = valor;
+
+      if ((PORTAS_PCF + PORTAS_595) > PORTAS_TOTAIS) {
+        PORTAS_PCF = 0;
+        PORTAS_595 = 0;
+        EEPROM.update(EEPROM_ADDR_PC, 0);
+        EEPROM.update(EEPROM_ADDR_PH, 0);
+        Serial.println("Valores de PCF e 595 zerados para evitar inconsistência");
+      }
+
+      atualizarConfiguracoesDerivadas();
       salvarConfiguracoes();
       Serial.println("PORTAS_TOTAIS atualizado para " + String(PORTAS_TOTAIS));
     } else {
@@ -136,8 +150,7 @@ void interpretarComando(String comando) {
     int valor = comando.substring(7).toInt();
     if (valor >= 0 && valor <= PORTAS_TOTAIS) {
       PORTAS_PCF = valor;
-      PORTAS_595 = PORTAS_TOTAIS - PORTAS_PCF;
-      qtdeCI = (PORTAS_595 + 7) / 8;
+      atualizarConfiguracoesDerivadas();
       salvarConfiguracoes();
       Serial.println("PORTAS_PCF atualizado para " + String(PORTAS_PCF));
     } else {
@@ -148,10 +161,9 @@ void interpretarComando(String comando) {
     if (valor >= 0 && valor <= PORTAS_TOTAIS) {
       PORTAS_595 = valor;
       PORTAS_PCF = PORTAS_TOTAIS - PORTAS_595;
-      qtdeCI = (PORTAS_595 + 7) / 8;
+      atualizarConfiguracoesDerivadas();
       salvarConfiguracoes();
       Serial.println("PORTAS_595 atualizado para " + String(PORTAS_595));
-      Serial.println("qtdeCI ajustado para " + String(qtdeCI));
     } else {
       Serial.println("Valor invalido para PH");
     }

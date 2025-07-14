@@ -1,0 +1,104 @@
+#include <Adafruit_PCF8574.h>
+
+Adafruit_PCF8574 pcf;
+#define PORTAS 8  // Total de canais (PCF + 74HC595)
+
+#define pinSH_CP 4
+#define pinST_CP 3
+#define pinDS    2
+#define qtdeCI   1
+
+int incomingByte[PORTAS];
+byte ciBuffer[qtdeCI];
+
+// Filtro: tempo do último "ligar" para cada saída
+unsigned long ultimaAtivacao[PORTAS];
+const unsigned long TEMPO_MINIMO_LIGADO = 5;  // ms
+
+void ciWrite(byte pino, bool estado) {
+  bitWrite(ciBuffer[pino / 8], pino % 8, estado);
+  digitalWrite(pinST_CP, LOW);
+  for (int nC = qtdeCI - 1; nC >= 0; nC--) {
+    for (int nB = 7; nB >= 0; nB--) {
+      digitalWrite(pinSH_CP, LOW);
+      digitalWrite(pinDS, bitRead(ciBuffer[nC], nB));
+      digitalWrite(pinSH_CP, HIGH);
+    }
+  }
+  digitalWrite(pinST_CP, HIGH);
+}
+
+void setup() {
+  Serial.begin(57600);
+  pinMode(pinSH_CP, OUTPUT);
+  pinMode(pinST_CP, OUTPUT);
+  pinMode(pinDS, OUTPUT);
+
+  if (!pcf.begin(0x20, &Wire)) {
+    Serial.println("Erro: PCF8574 não encontrado");
+    while (1);
+  }
+
+  for (uint8_t p = 0; p < 8; p++) {
+    pcf.pinMode(p, OUTPUT);
+    pcf.digitalWrite(p, HIGH);
+  }
+
+  for (uint8_t i = 0; i < qtdeCI; i++) {
+    ciBuffer[i] = 0;
+  }
+
+  ciWrite(0, false);
+}
+
+void loop() {
+  static byte buffer[PORTAS];
+  static byte index = 0;
+  static unsigned long lastByteTime = 0;
+
+  while (Serial.available()) {
+    byte b = Serial.read();
+    unsigned long now = millis();
+
+    if (now - lastByteTime > 20) {
+      index = 0;
+    }
+    lastByteTime = now;
+
+    buffer[index++] = b;
+
+    if (index == PORTAS) {
+      for (int j = 0; j < PORTAS; j++) {
+        bool novoEstado = buffer[j];
+
+        // Inversão para relé ativo em LOW
+        if (j < 8) {
+          // Filtro de 30 ms
+          if (novoEstado == 1) {
+            // Liga (relé em LOW)
+            pcf.digitalWrite(j, LOW);
+            ultimaAtivacao[j] = millis();
+          } else {
+            if (millis() - ultimaAtivacao[j] >= TEMPO_MINIMO_LIGADO) {
+              pcf.digitalWrite(j, HIGH);  // Desliga
+            }
+            // Caso contrário, ignora o desligamento
+          }
+        } else {
+          // Saídas 595 — sem inversão
+          byte pin595 = j - 8;
+          if (novoEstado == 1) {
+            ciWrite(pin595, true);
+            ultimaAtivacao[j] = millis();
+          } else {
+            if (millis() - ultimaAtivacao[j] >= TEMPO_MINIMO_LIGADO) {
+              ciWrite(pin595, false);
+            }
+          }
+        }
+      }
+
+      index = 0;
+    }
+  }
+}
